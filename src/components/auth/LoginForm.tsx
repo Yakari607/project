@@ -10,28 +10,21 @@ function LoginForm() {
 
   const handleGoogleSignIn = async () => {
     const provider = new GoogleAuthProvider();
-    // Ajoute le scope Gmail
     provider.addScope('https://www.googleapis.com/auth/gmail.readonly');
-
     setIsLoading(true);
 
     try {
-      // Connexion
       const result = await signInWithPopup(auth, provider);
 
-      // Récupère le token
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (credential && credential.accessToken) {
         const accessToken = credential.accessToken;
-        // Stocke le token (simple démo, localStorage)
         localStorage.setItem('gmailAccessToken', accessToken);
       } else {
-        throw new Error("No access token found");
+        throw new Error('Aucun jeton trouvé');
       }
 
-      // Redirige vers la page qui affichera les mails
       navigate('/homelogin');
-      
     } catch (error) {
       alert(`Erreur lors de la connexion : ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
     } finally {

@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 
+/** --------------------------------------------------------------------------
+ * Types
+ * ------------------------------------------------------------------------- */
 type GmailPart = {
   partId: string;
   mimeType: string;
@@ -23,24 +26,49 @@ interface EmailType {
   htmlContent: string;
 }
 
+/** --------------------------------------------------------------------------
+ * 1) Fonctions utilitaires de décodage
+ * ------------------------------------------------------------------------- */
+
+/** 
+ * decodeBase64UrlUTF8
+ * - Décodage en texte UTF-8 (pour la partie HTML). 
+ * - Évite les caractères "Ã©" au lieu de "é".
+ */
+function decodeBase64UrlUTF8(base64Url: string): string {
+  // Remplace base64URL par base64 standard
+  const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+
+  // Convertit la chaîne binaire ASCII en tableau d'octets
+  const rawData = window.atob(base64);
+  const bytes = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) {
+    bytes[i] = rawData.charCodeAt(i);
+  }
+
+  // Utilise TextDecoder pour interpréter en UTF-8
+  const decoder = new TextDecoder('utf-8');
+  return decoder.decode(bytes);
+}
+
+/** 
+ * decodeBase64UrlBinary
+ * - Décodage binaire brut (pour les images inline).
+ * - On renvoie une chaîne "ASCII 8 bits" afin de pouvoir la repasser dans btoa().
+ */
+function decodeBase64UrlBinary(base64Url: string): string {
+  const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+  return window.atob(base64); // renvoie une chaîne binaire
+}
+
+/** --------------------------------------------------------------------------
+ * Composant principal
+ * ------------------------------------------------------------------------- */
 const HomeLogin: React.FC = () => {
   const [emails, setEmails] = useState<EmailType[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<EmailType | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-
-  // Fonction utilitaire pour décoder Base64URL -> texte brut
-  const decodeBase64Url = (input: string): string => {
-    try {
-      const base64 = input.replace(/-/g, '+').replace(/_/g, '/');
-      const decoded = atob(base64);
-      // On renvoie tel quel, car il peut s'agir de HTML
-      return decoded;
-    } catch (e) {
-      console.error('Erreur de décodage Base64URL :', e);
-      return 'Impossible de décoder.';
-    }
-  };
 
   // Récupère le scope + token depuis localStorage et appelle l’API Gmail
   useEffect(() => {
@@ -102,8 +130,12 @@ const HomeLogin: React.FC = () => {
             const htmlPart = findHtmlPart(msgData.payload);
             let htmlContent = '';
 
+            /** -------------------------------------------------------------------------
+             * MOD: Pour la partie HTML, on utilise "decodeBase64UrlUTF8" 
+             *     afin d'afficher correctement les caractères accentués.
+             * ------------------------------------------------------------------------*/
             if (htmlPart && htmlPart.body?.data) {
-              htmlContent = decodeBase64Url(htmlPart.body.data);
+              htmlContent = decodeBase64UrlUTF8(htmlPart.body.data);
             }
 
             // 4) Gestion des inline attachments (cid) : remplace `cid:xxxx`
@@ -142,12 +174,11 @@ const HomeLogin: React.FC = () => {
     fetchEmails();
   }, []);
 
-  // Trouver la part "text/html" la plus pertinente
+  /** 
+   * Trouver la part "text/html" la plus pertinente 
+   */
   const findHtmlPart = (payload: GmailPart): GmailPart | null => {
-    // Si c’est HTML direct
     if (payload.mimeType === 'text/html') return payload;
-
-    // Sinon on cherche dans parts
     if (payload.parts) {
       for (const part of payload.parts) {
         const found = findHtmlPart(part);
@@ -157,7 +188,10 @@ const HomeLogin: React.FC = () => {
     return null;
   };
 
-  // Récupère un attachmentId et le transforme en data URI
+  /**
+   * Récupère un attachmentId et le transforme en data URI
+   * pour les images inline.
+   */
   const fetchAttachmentAsDataUri = async (
     messageId: string,
     attachmentId: string,
@@ -176,9 +210,10 @@ const HomeLogin: React.FC = () => {
     }
     const attachData = await attachRes.json();
     const base64Data = attachData.data; // c'est du base64URL
-    const rawData = decodeBase64Url(base64Data);
 
-    // On reconstruit un data URI (e.g. "data:image/png;base64,AAA...")
+    // MOD: On veut un binaire ASCII, pour pouvoir repasser en b64 standard.
+    const rawData = decodeBase64UrlBinary(base64Data);
+
     const dataUri =
       'data:' +
       mimeType +
@@ -187,8 +222,11 @@ const HomeLogin: React.FC = () => {
     return dataUri;
   };
 
-  // Balaye toutes les parts pour voir s’il y a des images inline
-  // (disposition : "inline", contentId : "cid:xyz"), puis remplace dans le HTML
+  /**
+   * Balaye toutes les parts pour voir s’il y a des images inline (content-id).
+   * On remplace "cid:xxx" dans le HTML par un "data:image/png;base64,..." 
+   * si on trouve l'attachment correspondant.
+   */
   const replaceCidImages = async (
     payload: GmailPart,
     html: string,
@@ -200,9 +238,6 @@ const HomeLogin: React.FC = () => {
     let updatedHtml = html;
 
     for (const part of payload.parts) {
-      // Vérifie si c'est un inline attachment
-      // Souvent un header "Content-Id" : <imageXYZ@somehost>
-      // et part.mimeType = "image/png", etc.
       const contentIdHeader = part.headers?.find(
         (h) => h.name.toLowerCase() === 'content-id'
       );
@@ -215,32 +250,29 @@ const HomeLogin: React.FC = () => {
         dispositionHeader.value.toLowerCase().includes('inline');
 
       if (contentIdHeader && isInline && part.body?.attachmentId) {
-        // contentIdHeader.value sera du genre "<imageXYZ@somehost>"
-        const cidRaw = contentIdHeader.value.replace(/[<>]/g, ''); // "imageXYZ@somehost"
-        const mimeType = part.mimeType || 'image/png'; // par défaut
+        const cidRaw = contentIdHeader.value.replace(/[<>]/g, '');
+        const realMime = part.mimeType || 'image/png';
 
-        // Récupérer l'attachment en data URI
         const dataUri = await fetchAttachmentAsDataUri(
           messageId,
           part.body.attachmentId,
-          mimeType,
+          realMime,
           accessToken
         );
 
         if (dataUri) {
-          // Remplace l'occurence "cid:cidRaw" par dataUri
           const cidNeedle = `cid:${cidRaw}`;
           updatedHtml = updatedHtml.replace(new RegExp(cidNeedle, 'g'), dataUri);
         }
       }
-      // S'il y a des sous-parts, descendre
+
       if (part.parts) {
         updatedHtml = await replaceCidImages(part, updatedHtml, messageId, accessToken);
       }
     }
-
     return updatedHtml;
   };
+
 
   const openEmail = (email: EmailType) => {
     setSelectedEmail(email);
@@ -271,12 +303,12 @@ const HomeLogin: React.FC = () => {
           <p className="text-center text-gray-400">Aucun email à afficher.</p>
         )}
 
+        {/* Liste des emails */}
         <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
           {emails.map((email) => (
             <div
               key={email.id}
-              className="bg-gray-800 rounded-lg shadow p-4 cursor-pointer
-                         hover:bg-gray-700 transition-colors"
+              className="bg-gray-800 rounded-lg shadow p-4 cursor-pointer hover:bg-gray-700 transition-colors"
               onClick={() => openEmail(email)}
             >
               <h2 className="font-bold text-white line-clamp-1">
